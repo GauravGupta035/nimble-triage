@@ -1,0 +1,10 @@
+ERROR auth: invalid password for user alice@example.com
+WARN tls: certificate for api.example.com expires in 3 days
+INFO http GET /health 200 2ms
+ERROR payment-worker: retry 1/5 failed, retrying in 2s
+WARN db: slow query took 4.8s: SELECT * FROM orders WHERE customer_id = 42
+CRITICAL kernel: Out of memory: Killed process 4121 (postgres)
+WARN waf: blocked 340 requests from 185.220.101.4 matching SQL injection pattern
+DEBUG cache: miss for key user:4821:profile
+INFO deploy: rolled out version 2.14.0 to 12/12 pods
+ERROR dns: lookup api.stripe.com failed: SERVFAIL
