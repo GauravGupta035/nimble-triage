@@ -1,0 +1,33 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "nimble-triage"
+version = "0.1.0"
+description = "Pipe your logs through a local decision model: severity, category and needs-attention for every entry, computed on your machine."
+readme = "README.md"
+requires-python = ">=3.10"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [{ name = "Gaurav Gupta", email = "guptagaurav035@gmail.com" }]
+keywords = ["logs", "triage", "ollama", "nimble", "local-llm", "cli"]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Environment :: Console",
+    "Operating System :: OS Independent",
+    "Topic :: System :: Logging",
+]
+dependencies = []
+
+[project.optional-dependencies]
+dev = ["pytest>=8", "build", "twine"]
+
+[project.scripts]
+nimble-triage = "nimble_triage.cli:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/nimble_triage"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
