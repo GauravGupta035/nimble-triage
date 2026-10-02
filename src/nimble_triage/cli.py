@@ -52,13 +52,23 @@ def build_parser() -> argparse.ArgumentParser:
     )
 
     parser.add_argument(
-        "files", nargs="*", metavar="FILE", help="log files to read (default: stdin, '-' also means stdin)"
+        "files",
+        nargs="*",
+        metavar="FILE",
+        help="log files to read (default: stdin, '-' also means stdin)",
     )
     parser.add_argument(
-        "-f", "--format", choices=("jsonl", "pretty"), default="jsonl", help="output format (default: jsonl)"
+        "-f",
+        "--format",
+        choices=("jsonl", "pretty"),
+        default="jsonl",
+        help="output format (default: jsonl)",
     )
     parser.add_argument(
-        "-a", "--only-attention", action="store_true", help="print only entries that need attention"
+        "-a",
+        "--only-attention",
+        action="store_true",
+        help="print only entries that need attention",
     )
     parser.add_argument(
         "-t",
@@ -67,19 +77,32 @@ def build_parser() -> argparse.ArgumentParser:
         default=DEFAULT_THRESHOLD,
         help=f"needs-attention cutoff between 0 and 1 (default: {DEFAULT_THRESHOLD})",
     )
-    parser.add_argument("--model", default=DEFAULT_MODEL, help=f"Ollama model (default: {DEFAULT_MODEL})")
-    parser.add_argument("--host", help="Ollama URL (default: $OLLAMA_HOST or http://localhost:11434)")
     parser.add_argument(
-        "--timeout", type=float, default=120.0, help="seconds to wait for each answer (default: 120)"
+        "--model",
+        default=DEFAULT_MODEL,
+        help=f"Ollama model (default: {DEFAULT_MODEL})",
     )
-    parser.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
+    parser.add_argument(
+        "--host", help="Ollama URL (default: $OLLAMA_HOST or http://localhost:11434)"
+    )
+    parser.add_argument(
+        "--timeout",
+        type=float,
+        default=120.0,
+        help="seconds to wait for each answer (default: 120)",
+    )
+    parser.add_argument(
+        "--version", action="version", version=f"%(prog)s {__version__}"
+    )
 
     return parser
 
 
 def read_entries(files: list[str]) -> Iterator[str]:
     """Yield non-blank, stripped lines from the files, or stdin when none are given."""
-    with fileinput.input(files=files or ("-",), encoding="utf-8", errors="replace") as lines:
+    with fileinput.input(
+        files=files or ("-",), encoding="utf-8", errors="replace"
+    ) as lines:
         for raw in lines:
             text = raw.strip()
 
@@ -89,7 +112,9 @@ def read_entries(files: list[str]) -> Iterator[str]:
 
 def format_pretty(result: TriageResult, color: bool) -> str:
     marker = "!" if result.needs_attention else " "
-    severity = result.severity + ("?" if result.severity_confidence < LOW_CONFIDENCE else "")
+    severity = result.severity + (
+        "?" if result.severity_confidence < LOW_CONFIDENCE else ""
+    )
     severity = f"{severity:<9}"
 
     if color:

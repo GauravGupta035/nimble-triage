@@ -33,7 +33,10 @@ class TriageResult:
         return SEVERITIES.index(self.severity)
 
     def to_dict(self) -> dict[str, Any]:
-        return {k: round(v, 4) if isinstance(v, float) else v for k, v in asdict(self).items()}
+        return {
+            k: round(v, 4) if isinstance(v, float) else v
+            for k, v in asdict(self).items()
+        }
 
 
 def parse_answers(
@@ -62,5 +65,7 @@ def parse_answers(
     return result
 
 
-def triage_line(client: Asker, line: str, threshold: float = DEFAULT_THRESHOLD) -> TriageResult:
+def triage_line(
+    client: Asker, line: str, threshold: float = DEFAULT_THRESHOLD
+) -> TriageResult:
     return parse_answers(line, client.ask(line, QUESTIONS), threshold)

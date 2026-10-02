@@ -61,6 +61,9 @@ QUESTIONS: dict[str, dict[str, Any]] = {
     "needs_attention": {
         "type": "noul",
         "instructions": ATTENTION_INSTRUCTIONS,
-        "criteria": {"false": "No, safe to ignore", "true": "Yes, a human should look at it"},
+        "criteria": {
+            "false": "No, safe to ignore",
+            "true": "Yes, a human should look at it",
+        },
     },
 }
