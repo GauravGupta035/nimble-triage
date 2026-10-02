@@ -13,7 +13,7 @@ DEFAULT_HOST = "http://localhost:11434"
 DEFAULT_PORT = 11434
 DEFAULT_MODEL = "nimble"
 ENDPOINT = "/v1/systemone"
-MAX_BODY_BYTES = 64 * 1024  # documented request limit for text-only calls - 64 KB
+MAX_BODY_BYTES = 64 * 1024  # documented request limit for text-only calls - 64 KiB
 
 
 class TriageError(Exception):
