@@ -2,6 +2,7 @@
 
 import io
 import urllib.error
+import urllib.request
 
 import pytest
 
@@ -59,3 +60,11 @@ def test_http_errors_become_actionable_messages(code, body, expected):
 def test_unreachable_host_raises_triage_error():
     with pytest.raises(TriageError, match="cannot reach Ollama"):
         SystemOneClient(host="localhost:1", timeout=2).ask("x", {})
+
+def test_http_error_from_ask_is_explained(monkeypatch):
+    def fake_urlopen(request, timeout):
+        raise _http_error(404, '{"error":"model \\"nimble\\" not found, try pulling it first"}')
+
+    monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+    with pytest.raises(TriageError, match="ollama pull nimble"):
+        SystemOneClient().ask("x", {})
