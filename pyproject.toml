@@ -13,9 +13,17 @@ license-files = ["LICENSE"]
 authors = [{ name = "Gaurav Gupta", email = "guptagaurav035@gmail.com" }]
 keywords = ["logs", "triage", "ollama", "nimble", "local-llm", "cli"]
 classifiers = [
-    "Programming Language :: Python :: 3",
+    "Development Status :: 3 - Alpha",
     "Environment :: Console",
+    "Intended Audience :: Developers",
+    "Intended Audience :: System Administrators",
     "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
     "Topic :: System :: Logging",
 ]
 dependencies = []
@@ -25,6 +33,11 @@ dev = ["pytest>=8", "build", "twine"]
 
 [project.scripts]
 nimble-triage = "nimble_triage.cli:main"
+
+[project.urls]
+Homepage = "https://github.com/GauravGupta035/nimble-triage"
+Source = "https://github.com/GauravGupta035/nimble-triage"
+Issues = "https://github.com/GauravGupta035/nimble-triage/issues"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/nimble_triage"]

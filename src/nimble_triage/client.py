@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import math
 import os
 import urllib.error
 import urllib.parse
@@ -21,17 +22,41 @@ class TriageError(Exception):
 
 
 def resolve_host(host: str | None = None) -> str:
-    """Return a base URL like http://localhost:11434 from a flag, OLLAMA_HOST, or the default."""
-    raw = (host or os.environ.get("OLLAMA_HOST") or DEFAULT_HOST).strip().rstrip("/")
+    """Return a validated Ollama base URL."""
+    raw = (host or os.environ.get("OLLAMA_HOST") or DEFAULT_HOST).strip()
 
     if "://" not in raw:
         raw = "http://" + raw
 
-    if urllib.parse.urlsplit(raw).port is None:
-        raw = f"{raw}:{DEFAULT_PORT}"
+    try:
+        parsed = urllib.parse.urlsplit(raw)
+        port = parsed.port
+    except ValueError as exc:
+        raise TriageError(f"invalid Ollama URL {raw!r}: {exc}") from exc
 
-    return raw
+    if parsed.scheme not in {"http", "https"}:
+        raise TriageError(
+            f"invalid Ollama URL {raw!r}: scheme must be http or https"
+        )
 
+    if not parsed.hostname:
+        raise TriageError(
+            f"invalid Ollama URL {raw!r}: hostname is missing"
+        )
+
+    if parsed.query or parsed.fragment:
+        raise TriageError(
+            f"invalid Ollama URL {raw!r}: query strings and fragments are not supported"
+        )
+
+    if port is None:
+        parsed = parsed._replace(
+            netloc=f"{parsed.netloc}:{DEFAULT_PORT}"
+        )
+
+    parsed = parsed._replace(path=parsed.path.rstrip("/"))
+
+    return urllib.parse.urlunsplit(parsed)
 
 class SystemOneClient:
     """Sends one state plus a set of named questions, returns the answers dict."""
@@ -43,6 +68,11 @@ class SystemOneClient:
         timeout: float = 120.0,
         keep_alive: str = "10m",
     ) -> None:
+        if not math.isfinite(timeout) or timeout <= 0:
+            raise TriageError(
+                f"timeout must be a positive, finite number, got {timeout!r}"
+            )
+
         self.base_url = resolve_host(host)
         self.model = model
         self.timeout = timeout

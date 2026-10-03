@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import fileinput
 import json
+import math
 import os
 import sys
 from collections.abc import Iterator
@@ -40,6 +41,19 @@ def probability(text: str) -> float:
 
     return value
 
+def positive_seconds(text: str) -> float:
+    """argparse type for a positive, finite number of seconds."""
+    try:
+        value = float(text)
+    except ValueError:
+        raise argparse.ArgumentTypeError(f"{text!r} is not a number") from None
+
+    if not math.isfinite(value) or value <= 0:
+        raise argparse.ArgumentTypeError(
+            f"{text!r} must be a positive, finite number"
+        )
+
+    return value
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
@@ -87,12 +101,20 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--timeout",
-        type=float,
+        type=positive_seconds,
         default=120.0,
         help="seconds to wait for each answer (default: 120)",
     )
     parser.add_argument(
         "--version", action="version", version=f"%(prog)s {__version__}"
+    )
+    parser.add_argument(
+        "--continue-on-error",
+        action="store_true",
+        help=(
+            "report failed entries and continue processing "
+            "(exit code 1 if any entry fails)"
+        ),
     )
 
     return parser
@@ -109,6 +131,14 @@ def read_entries(files: list[str]) -> Iterator[str]:
             if text:
                 yield text[:MAX_LINE_CHARS]
 
+def escape_terminal_controls(text: str) -> str:
+    """Render terminal control characters as visible escape sequences."""
+    return "".join(
+        character
+        if character.isprintable()
+        else character.encode("unicode_escape").decode("ascii")
+        for character in text
+    )
 
 def format_pretty(result: TriageResult, color: bool) -> str:
     marker = "!" if result.needs_attention else " "
@@ -123,16 +153,42 @@ def format_pretty(result: TriageResult, color: bool) -> str:
         if result.needs_attention:
             marker = f"{BOLD_RED}{marker}{RESET}"
 
-    return f"{marker} {severity} {result.category:<11} {result.attention_probability:.2f}  {result.line}"
+    line = escape_terminal_controls(result.line)
 
+    return (
+        f"{marker} {severity} {result.category:<11} "
+        f"{result.attention_probability:.2f}  {line}"
+    )
 
-def run(args: argparse.Namespace, client: Asker, out: TextIO, err: TextIO) -> int:
-    color = args.format == "pretty" and out.isatty() and not os.environ.get("NO_COLOR")
-    total = flagged = 0
+def run(
+    args: argparse.Namespace,
+    client: Asker,
+    out: TextIO,
+    err: TextIO,
+) -> int:
+    color = (
+        args.format == "pretty"
+        and out.isatty()
+        and not os.environ.get("NO_COLOR")
+    )
+    total = flagged = failed = 0
 
     for line in read_entries(args.files):
-        result = triage_line(client, line, args.threshold)
         total += 1
+
+        try:
+            result = triage_line(client, line, args.threshold)
+        except TriageError as exc:
+            if not args.continue_on_error:
+                raise
+
+            failed += 1
+            message = escape_terminal_controls(str(exc))
+            err.write(
+                f"nimble-triage: entry {total}: {message}\n"
+            )
+            err.flush()
+            continue
 
         if result.needs_attention:
             flagged += 1
@@ -140,26 +196,41 @@ def run(args: argparse.Namespace, client: Asker, out: TextIO, err: TextIO) -> in
             continue
 
         if args.format == "jsonl":
-            out.write(json.dumps(result.to_dict(), ensure_ascii=False) + "\n")
+            out.write(
+                json.dumps(
+                    result.to_dict(),
+                    ensure_ascii=False,
+                )
+                + "\n"
+            )
         else:
             out.write(format_pretty(result, color) + "\n")
 
         out.flush()
 
     if args.format == "pretty":
-        err.write(f"{total} entries, {flagged} need attention\n")
+        summary = f"{total} entries, {flagged} need attention"
 
-    return 0
+        if failed:
+            summary += f", {failed} failed"
 
+        err.write(summary + "\n")
+
+    return 1 if failed else 0
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
-    client = SystemOneClient(host=args.host, model=args.model, timeout=args.timeout)
 
     try:
+        client = SystemOneClient(
+            host=args.host,
+            model=args.model,
+            timeout=args.timeout,
+        )
         return run(args, client, sys.stdout, sys.stderr)
     except TriageError as exc:
-        print(f"nimble-triage: error: {exc}", file=sys.stderr)
+        message = escape_terminal_controls(str(exc))
+        print(f"nimble-triage: error: {message}", file=sys.stderr)
         return 1
     except BrokenPipeError:
         # The reader (e.g. `head`) went away. Point stdout at /dev/null so Python's
@@ -168,7 +239,10 @@ def main(argv: list[str] | None = None) -> int:
         os.dup2(devnull, sys.stdout.fileno())
         return 1
     except OSError as exc:
-        print(f"nimble-triage: error: {exc.filename}: {exc.strerror}", file=sys.stderr)
+        message = escape_terminal_controls(
+            f"{exc.filename}: {exc.strerror}"
+        )
+        print(f"nimble-triage: error: {message}", file=sys.stderr)
         return 1
     except KeyboardInterrupt:
         return 130

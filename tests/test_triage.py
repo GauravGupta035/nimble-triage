@@ -8,7 +8,9 @@ from nimble_triage.triage import parse_answers, triage_line
 
 
 def test_parses_a_well_formed_answer(make_answers):
-    result = parse_answers("disk full", make_answers(severity="critical", attention=0.97))
+    result = parse_answers(
+        "disk full", make_answers(severity="critical", attention=0.97)
+    )
     assert result.severity == "critical"
     assert result.category == "network"
     assert result.needs_attention is True
@@ -17,16 +19,29 @@ def test_parses_a_well_formed_answer(make_answers):
 
 @pytest.mark.parametrize(
     ("attention", "threshold", "expected"),
-    [(0.49, 0.5, False), (0.5, 0.5, True), (0.51, 0.5, True), (0.11, 0.05, True), (0.99, 1.0, False)],
+    [
+        (0.49, 0.5, False),
+        (0.5, 0.5, True),
+        (0.51, 0.5, True),
+        (0.11, 0.05, True),
+        (0.99, 1.0, False),
+    ],
 )
-def test_threshold_decides_needs_attention(make_answers, attention, threshold, expected):
+def test_threshold_decides_needs_attention(
+    make_answers, attention, threshold, expected
+):
     result = parse_answers("x", make_answers(attention=attention), threshold)
     assert result.needs_attention is expected
-    assert result.attention_probability == attention  # the model's number is never changed
+    assert (
+        result.attention_probability == attention
+    )  # the model's number is never changed
 
 
 def test_severity_rank_follows_order(make_answers):
-    ranks = [parse_answers("x", make_answers(severity=s)).severity_rank for s in ("debug", "error")]
+    ranks = [
+        parse_answers("x", make_answers(severity=s)).severity_rank
+        for s in ("debug", "error")
+    ]
     assert ranks == [0, 3]
 
 
@@ -59,3 +74,46 @@ def test_triage_line_sends_the_line_and_our_questions(fake_client):
     client = fake_client()
     triage_line(client, "ERROR boom")
     assert client.calls == [("ERROR boom", QUESTIONS)]
+
+
+def test_unknown_category_rejected(make_answers):
+    with pytest.raises(TriageError, match="unknown category 'made-up'"):
+        parse_answers(
+            "x",
+            make_answers(category="made-up"),
+        )
+
+
+@pytest.mark.parametrize(
+    ("section", "field", "value", "message"),
+    [
+        ("severity", "confidence", -0.1, "severity confidence"),
+        ("severity", "confidence", 1.1, "severity confidence"),
+        ("severity", "confidence", float("nan"), "severity confidence"),
+        ("severity", "confidence", float("inf"), "severity confidence"),
+        ("severity", "confidence", True, "severity confidence"),
+        ("category", "confidence", -0.1, "category confidence"),
+        ("category", "confidence", 1.1, "category confidence"),
+        ("category", "confidence", float("nan"), "category confidence"),
+        ("needs_attention", "noul", -0.1, "attention probability"),
+        ("needs_attention", "noul", 1.1, "attention probability"),
+        (
+            "needs_attention",
+            "noul",
+            float("nan"),
+            "attention probability",
+        ),
+    ],
+)
+def test_invalid_model_probabilities_are_rejected(
+    make_answers,
+    section,
+    field,
+    value,
+    message,
+):
+    answers = make_answers()
+    answers[section][field] = value
+
+    with pytest.raises(TriageError, match=message):
+        parse_answers("x", answers)

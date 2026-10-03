@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
+import math
 from dataclasses import asdict, dataclass
 from typing import Any, Protocol
 
 from nimble_triage.client import TriageError
-from nimble_triage.questions import QUESTIONS, SEVERITIES
+from nimble_triage.questions import CATEGORIES, QUESTIONS, SEVERITIES
 
 DEFAULT_THRESHOLD = 0.5
 
@@ -38,32 +39,78 @@ class TriageResult:
             for k, v in asdict(self).items()
         }
 
+def parse_probability(value: Any, field: str) -> float:
+    """Parse and validate a probability returned by the model."""
+    if isinstance(value, bool):
+        raise TriageError(
+            f"unexpected answer shape from the model: "
+            f"{field} must be a number between 0 and 1"
+        )
+
+    try:
+        probability = float(value)
+    except (TypeError, ValueError) as exc:
+        raise TriageError(
+            f"unexpected answer shape from the model: "
+            f"{field} must be a number between 0 and 1"
+        ) from exc
+
+    if not math.isfinite(probability) or not 0.0 <= probability <= 1.0:
+        raise TriageError(
+            f"unexpected answer shape from the model: "
+            f"{field} must be between 0 and 1, got {value!r}"
+        )
+
+    return probability
 
 def parse_answers(
-    line: str, answers: dict[str, Any], threshold: float = DEFAULT_THRESHOLD
+    line: str,
+    answers: dict[str, Any],
+    threshold: float = DEFAULT_THRESHOLD,
 ) -> TriageResult:
     try:
         severity = answers["severity"]
         category = answers["category"]
-        attention = float(answers["needs_attention"]["noul"])
-        result = TriageResult(
-            severity=severity["choice"],
-            severity_confidence=float(severity["confidence"]),
-            category=category["choice"],
-            category_confidence=float(category["confidence"]),
-            attention_probability=attention,
-            needs_attention=attention >= threshold,
-            line=line,
+
+        severity_choice = severity["choice"]
+        category_choice = category["choice"]
+
+        severity_confidence = parse_probability(
+            severity["confidence"],
+            "severity confidence",
+        )
+        category_confidence = parse_probability(
+            category["confidence"],
+            "category confidence",
+        )
+        attention_probability = parse_probability(
+            answers["needs_attention"]["noul"],
+            "attention probability",
+        )
+    except (KeyError, TypeError) as exc:
+        raise TriageError(
+            f"unexpected answer shape from the model: {exc!r}"
+        ) from exc
+
+    if severity_choice not in SEVERITIES:
+        raise TriageError(
+            f"model returned unknown severity {severity_choice!r}"
         )
 
-    except (KeyError, TypeError, ValueError) as exc:
-        raise TriageError(f"unexpected answer shape from the model: {exc!r}") from exc
+    if category_choice not in CATEGORIES:
+        raise TriageError(
+            f"model returned unknown category {category_choice!r}"
+        )
 
-    if result.severity not in SEVERITIES:
-        raise TriageError(f"model returned unknown severity {result.severity!r}")
-
-    return result
-
+    return TriageResult(
+        severity=severity_choice,
+        severity_confidence=severity_confidence,
+        category=category_choice,
+        category_confidence=category_confidence,
+        attention_probability=attention_probability,
+        needs_attention=attention_probability >= threshold,
+        line=line,
+    )
 
 def triage_line(
     client: Asker, line: str, threshold: float = DEFAULT_THRESHOLD
