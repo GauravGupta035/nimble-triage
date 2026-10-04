@@ -1,6 +1,6 @@
 # nimble-triage
 
-Pipe your logs through a local decision model. Every entry gets a **severity**,
+Pipe your logs through a local decision model. Every entry, in the default (full) mode, gets a **severity**,
 a **category** and a **needs-attention** flag, computed by
 [Nimble](https://ollama.com/library/nimble) through Ollama's
 `/v1/systemone` endpoint. No API key is required. By default, logs are sent
@@ -43,25 +43,36 @@ nimble-triage has no dependencies outside the Python standard library.
 ## Usage
 
 ```bash
-nimble-triage app.log                          # JSON Lines to stdout
+# Full classification
+nimble-triage application.log                  # JSON Lines to stdout
 nimble-triage -f pretty app.log                # aligned, coloured output
 nimble-triage -f pretty -a app.log             # only entries that need attention
 tail -f app.log | nimble-triage -f pretty -a   # live
 grep -v DEBUG app.log | nimble-triage          # pre-filter to save time
 nimble-triage app.log | jq 'select(.needs_attention)'
 nimble-triage --continue-on-error app.log      # keep going after failed entries
+
+# Faster attention classification
+nimble-triage --mode attention application.log
+
+# Full classification, but print only flagged entries
+nimble-triage --flagged-only application.log
+
+# Fast classification and print only flagged entries
+nimble-triage --mode attention --flagged-only application.log
 ```
 
 | Option | Default | Meaning |
 |---|---|---|
 | `FILE ...` | stdin | Log files to read. `-` also means stdin. |
 | `-f, --format` | `jsonl` | `jsonl` or `pretty` |
-| `-a, --only-attention` | off | Print only entries that need attention |
 | `-t, --threshold` | `0.5` | Attention probability at or above which an entry is flagged |
 | `--model` | `nimble` | Ollama model to use |
 | `--host` | `$OLLAMA_HOST` or `http://localhost:11434` | Where Ollama is running |
 | `--timeout` | `120` | Seconds to wait for each answer |
 | `--continue-on-error` | off | Report failed entries to stderr and continue; exit with code 1 if any fail |
+| `-m, --mode {full,attention}` | `full` | Select full classification or faster attention classification |
+| `-a, --flagged-only` | off | Print only entries at or above the attention threshold |
 
 ### JSON Lines output
 
@@ -77,6 +88,15 @@ One object per non-blank input line:
 - `needs_attention`: `attention_probability >= --threshold`
 
 Severity and needs-attention are separate judgements: a certificate that expires in three days is only a warning but needs a human, while a single failed login is an error that does not.
+
+### Attention mode output
+
+`--mode attention` sends only the needs-attention question to Nimble instead of
+all three questions. Use it when severity and category are not required.
+
+```json
+{"attention_probability": 0.9996, "needs_attention": true, "line": "WARN tls: certificate expires in 3 days"}
+```
 
 ### Exit codes
 
@@ -94,7 +114,7 @@ command exits with code 1 if any entry failed.
 
 ## How it works
 
-Each log line is sent to Ollama's `/v1/systemone` endpoint together with three typed questions: two `choice` questions (severity and category) and one `noul` (yes/no) question (needs attention). Nimble is a decision model: rather than generating text, it scores the options and returns probabilities. The wording of the questions lives in [`questions.py`](src/nimble_triage/questions.py) and is the main lever on accuracy.
+In the default mode, each log line is sent to Ollama's `/v1/systemone` endpoint together with three typed questions: two `choice` questions (severity and category) and one `noul` (yes/no) question (needs attention). The `attention mode` sends only one question i.e., needs attention. Nimble is a decision model: rather than generating text, it scores the options and returns probabilities. The wording of the questions lives in [`questions.py`](src/nimble_triage/questions.py) and is the main lever on accuracy.
 
 ## Privacy
 
@@ -109,6 +129,9 @@ before sending them to a remote host.
 - **Speed:** each line is one model call, roughly 1 to 3 seconds per line on an
   Apple M4 with 16 GB. nimble-triage is intended for tens to hundreds of
   entries, not entire log archives. Filter large inputs before processing.
+  Use `--mode attention` when severity and category are not required. It sends
+  one model question per entry instead of three and can substantially reduce
+  processing time.
 - **Independent entries:** each non-blank line is classified independently.
   Multiline stack traces and surrounding log context are not grouped together.
 - **Long lines:** entries are cut to their first 8,000 characters before being

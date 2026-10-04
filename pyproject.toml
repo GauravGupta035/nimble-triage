@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "nimble-triage"
-version = "0.1.0"
+version = "0.2.0"
 description = "Pipe your logs through a local decision model: severity, category and needs-attention for every entry, computed on your machine."
 readme = "README.md"
 requires-python = ">=3.10"

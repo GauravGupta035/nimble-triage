@@ -47,6 +47,15 @@ ATTENTION_INSTRUCTIONS = (
     "or other expected user mistake, and transient errors that are being retried automatically."
 )
 
+ATTENTION_QUESTION: dict[str, Any] = {
+    "type": "noul",
+    "instructions": ATTENTION_INSTRUCTIONS,
+    "criteria": {
+        "false": "No, safe to ignore",
+        "true": "Yes, a human should look at it",
+    },
+}
+
 QUESTIONS: dict[str, dict[str, Any]] = {
     "severity": {
         "type": "choice",
@@ -58,12 +67,9 @@ QUESTIONS: dict[str, dict[str, Any]] = {
         "instructions": "Which area of the system is this log entry about?",
         "criteria": CATEGORY_CRITERIA,
     },
-    "needs_attention": {
-        "type": "noul",
-        "instructions": ATTENTION_INSTRUCTIONS,
-        "criteria": {
-            "false": "No, safe to ignore",
-            "true": "Yes, a human should look at it",
-        },
-    },
+    "needs_attention": ATTENTION_QUESTION,
+}
+
+ATTENTION_QUESTIONS: dict[str, dict[str, Any]] = {
+    "needs_attention": ATTENTION_QUESTION,
 }

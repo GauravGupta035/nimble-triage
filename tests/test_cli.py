@@ -9,12 +9,17 @@ from nimble_triage.cli import (
     MAX_LINE_CHARS,
     build_parser,
     escape_terminal_controls,
+    format_attention_pretty,
     format_pretty,
     main,
     run,
 )
 from nimble_triage.client import TriageError
-from nimble_triage.triage import parse_answers
+from nimble_triage.questions import ATTENTION_QUESTIONS
+from nimble_triage.triage import (
+    AttentionResult,
+    parse_answers,
+)
 
 
 @pytest.fixture
@@ -42,15 +47,14 @@ def keyword_client(fake_client, make_answers):
 
     return fake_client(respond)
 
+
 @pytest.fixture
 def failing_client(fake_client, make_answers):
     """Fails on the INFO entry but succeeds on the others."""
 
     def respond(line):
         if line.startswith("INFO"):
-            raise TriageError(
-                "temporary model failure\x1b]52;c;Zm9v\x07"
-            )
+            raise TriageError("temporary model failure\x1b]52;c;Zm9v\x07")
 
         if line.startswith("WARN"):
             return make_answers(
@@ -64,6 +68,7 @@ def failing_client(fake_client, make_answers):
         )
 
     return fake_client(respond)
+
 
 def run_cli(argv, client):
     out, err = io.StringIO(), io.StringIO()
@@ -84,7 +89,7 @@ def test_jsonl_one_object_per_non_blank_line(log_file, keyword_client):
     assert err == ""  # no summary in jsonl mode
 
 
-def test_only_attention_filters_output_but_summary_counts_everything(
+def test_flagged_only_filters_output_but_summary_counts_everything(
     log_file, keyword_client
 ):
     _code, out, err = run_cli(["-f", "pretty", "-a", str(log_file)], keyword_client)
@@ -191,6 +196,7 @@ def test_invalid_host_returns_clean_error(capsys):
     assert "invalid Ollama URL" in captured.err
     assert "Traceback" not in captured.err
 
+
 def test_processing_stops_on_first_error_by_default(
     log_file,
     failing_client,
@@ -202,6 +208,7 @@ def test_processing_stops_on_first_error_by_default(
         "ERROR db down",
         "INFO user logged in",
     ]
+
 
 def test_continue_on_error_processes_remaining_entries(
     log_file,
@@ -230,6 +237,7 @@ def test_continue_on_error_processes_remaining_entries(
     assert "\x1b]52" not in err
     assert r"\x1b]52;c;Zm9v\x07" in err
 
+
 def test_continue_on_error_reports_failures_in_pretty_summary(
     log_file,
     failing_client,
@@ -247,9 +255,8 @@ def test_continue_on_error_reports_failures_in_pretty_summary(
     assert code == 1
     assert len(out.splitlines()) == 2
     assert "entry 2" in err
-    assert err.endswith(
-        "3 entries, 2 need attention, 1 failed\n"
-    )
+    assert err.endswith("3 entries, 2 need attention, 1 failed\n")
+
 
 def test_continue_on_error_returns_zero_when_nothing_fails(
     log_file,
@@ -263,3 +270,142 @@ def test_continue_on_error_returns_zero_when_nothing_fails(
     assert code == 0
     assert len(out.splitlines()) == 3
     assert err == ""
+
+
+def test_attention_mode_jsonl_has_reduced_fields(
+    log_file,
+    keyword_client,
+):
+    code, out, err = run_cli(
+        ["--mode", "attention", str(log_file)],
+        keyword_client,
+    )
+
+    rows = [json.loads(line) for line in out.splitlines()]
+
+    assert code == 0
+    assert rows == [
+        {
+            "attention_probability": 0.95,
+            "needs_attention": True,
+            "line": "ERROR db down",
+        },
+        {
+            "attention_probability": 0.05,
+            "needs_attention": False,
+            "line": "INFO user logged in",
+        },
+        {
+            "attention_probability": 0.8,
+            "needs_attention": True,
+            "line": "WARN cert expires soon",
+        },
+    ]
+    assert err == ""
+
+    assert all(
+        questions == ATTENTION_QUESTIONS for _line, questions in keyword_client.calls
+    )
+
+
+def test_attention_mode_combines_with_output_filter(
+    log_file,
+    keyword_client,
+):
+    code, out, err = run_cli(
+        [
+            "--mode",
+            "attention",
+            "--flagged-only",
+            str(log_file),
+        ],
+        keyword_client,
+    )
+
+    rows = [json.loads(line) for line in out.splitlines()]
+
+    assert code == 0
+    assert [row["line"] for row in rows] == [
+        "ERROR db down",
+        "WARN cert expires soon",
+    ]
+    assert err == ""
+
+
+def test_attention_mode_pretty_output(
+    log_file,
+    keyword_client,
+):
+    code, out, err = run_cli(
+        [
+            "--mode",
+            "attention",
+            "--format",
+            "pretty",
+            str(log_file),
+        ],
+        keyword_client,
+    )
+
+    assert code == 0
+    assert out.splitlines() == [
+        "! 0.95  ERROR db down",
+        "  0.05  INFO user logged in",
+        "! 0.80  WARN cert expires soon",
+    ]
+    assert err == "3 entries, 2 need attention\n"
+
+
+def test_attention_mode_pretty_escapes_controls():
+    result = AttentionResult(
+        attention_probability=0.9,
+        needs_attention=True,
+        line="unsafe\x1b]52;c;Zm9v\x07",
+    )
+
+    output = format_attention_pretty(result, color=False)
+
+    assert "\x1b" not in output
+    assert "\x07" not in output
+    assert r"\x1b]52;c;Zm9v\x07" in output
+
+
+def test_attention_mode_sends_only_attention_question(
+    log_file,
+    keyword_client,
+):
+    code, _, _ = run_cli(
+        ["-m", "attention", str(log_file)],
+        keyword_client,
+    )
+
+    assert code == 0
+    assert all(
+        questions == ATTENTION_QUESTIONS for _line, questions in keyword_client.calls
+    )
+
+
+def test_legacy_only_attention_alias_still_filters_output(
+    log_file,
+    keyword_client,
+):
+    code, out, err = run_cli(
+        ["--only-attention", str(log_file)],
+        keyword_client,
+    )
+
+    assert code == 0
+    assert [json.loads(line)["line"] for line in out.splitlines()] == [
+        "ERROR db down",
+        "WARN cert expires soon",
+    ]
+    assert err == ""
+
+
+def test_help_uses_unambiguous_option_names():
+    help_text = build_parser().format_help()
+
+    assert "-m {full,attention}" in help_text
+    assert "-a, --flagged-only" in help_text
+    assert "--only-attention" not in help_text
+    assert "--attention-only" not in help_text

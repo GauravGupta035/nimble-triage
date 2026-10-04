@@ -3,8 +3,14 @@
 import pytest
 
 from nimble_triage.client import TriageError
-from nimble_triage.questions import QUESTIONS
-from nimble_triage.triage import parse_answers, triage_line
+from nimble_triage.questions import ATTENTION_QUESTIONS, QUESTIONS
+from nimble_triage.triage import (
+    AttentionResult,
+    parse_answers,
+    parse_attention_answers,
+    triage_attention_line,
+    triage_line,
+)
 
 
 def test_parses_a_well_formed_answer(make_answers):
@@ -117,3 +123,72 @@ def test_invalid_model_probabilities_are_rejected(
 
     with pytest.raises(TriageError, match=message):
         parse_answers("x", answers)
+
+
+def test_parse_attention_answers() -> None:
+    result = parse_attention_answers(
+        "database unavailable",
+        {"needs_attention": {"type": "noul", "noul": 0.91}},
+        threshold=0.7,
+    )
+
+    assert result == AttentionResult(
+        attention_probability=0.91,
+        needs_attention=True,
+        line="database unavailable",
+    )
+
+
+@pytest.mark.parametrize(
+    "answers",
+    [
+        {},
+        {"needs_attention": None},
+        {"needs_attention": {}},
+        {"needs_attention": {"noul": "invalid"}},
+    ],
+)
+def test_malformed_attention_answers_raise_triage_error(answers):
+    with pytest.raises(TriageError, match="unexpected answer shape"):
+        parse_attention_answers("x", answers)
+
+
+def test_attention_threshold_decides_needs_attention() -> None:
+    result = parse_attention_answers(
+        "request completed",
+        {"needs_attention": {"type": "noul", "noul": 0.69}},
+        threshold=0.7,
+    )
+
+    assert result.needs_attention is False
+    assert result.attention_probability == 0.69
+
+
+def test_attention_result_to_dict_rounds_probability() -> None:
+    result = AttentionResult(
+        attention_probability=0.123456789,
+        needs_attention=False,
+        line="routine",
+    )
+
+    assert result.to_dict() == {
+        "attention_probability": 0.1235,
+        "needs_attention": False,
+        "line": "routine",
+    }
+
+
+def test_triage_attention_line_sends_only_attention_question(fake_client):
+    client = fake_client(
+        lambda _line: {
+            "needs_attention": {
+                "type": "noul",
+                "noul": 0.8,
+            }
+        }
+    )
+
+    result = triage_attention_line(client, "ERROR boom")
+
+    assert result.needs_attention is True
+    assert client.calls == [("ERROR boom", ATTENTION_QUESTIONS)]

@@ -1,6 +1,11 @@
 """Guard the question definitions against limits the Ollama API enforces."""
 
-from nimble_triage.questions import CATEGORIES, QUESTIONS, SEVERITIES
+from nimble_triage.questions import (
+    ATTENTION_QUESTIONS,
+    CATEGORIES,
+    QUESTIONS,
+    SEVERITIES,
+)
 
 
 def test_severities_are_ordered_lowest_to_highest():
@@ -23,3 +28,9 @@ def test_choice_questions_have_2_to_26_string_criteria():
 
 def test_other_is_a_fallback_category():
     assert "other" in CATEGORIES
+
+
+def test_attention_questions_contains_only_attention_question() -> None:
+    assert set(ATTENTION_QUESTIONS) == {"needs_attention"}
+
+    assert ATTENTION_QUESTIONS["needs_attention"] is QUESTIONS["needs_attention"]

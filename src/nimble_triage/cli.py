@@ -13,7 +13,14 @@ from typing import TextIO
 
 from nimble_triage import __version__
 from nimble_triage.client import DEFAULT_MODEL, SystemOneClient, TriageError
-from nimble_triage.triage import DEFAULT_THRESHOLD, Asker, TriageResult, triage_line
+from nimble_triage.triage import (
+    DEFAULT_THRESHOLD,
+    Asker,
+    AttentionResult,
+    TriageResult,
+    triage_attention_line,
+    triage_line,
+)
 
 MAX_LINE_CHARS = 8_000  # keeps every request well under the 64 KiB body limit
 LOW_CONFIDENCE = 0.6  # below this, pretty output marks the severity with "?"
@@ -41,6 +48,7 @@ def probability(text: str) -> float:
 
     return value
 
+
 def positive_seconds(text: str) -> float:
     """argparse type for a positive, finite number of seconds."""
     try:
@@ -49,11 +57,10 @@ def positive_seconds(text: str) -> float:
         raise argparse.ArgumentTypeError(f"{text!r} is not a number") from None
 
     if not math.isfinite(value) or value <= 0:
-        raise argparse.ArgumentTypeError(
-            f"{text!r} must be a positive, finite number"
-        )
+        raise argparse.ArgumentTypeError(f"{text!r} must be a positive, finite number")
 
     return value
+
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
@@ -62,7 +69,7 @@ def build_parser() -> argparse.ArgumentParser:
             "Label every log line with a severity, a category and a needs-attention flag, "
             "using the Nimble decision model running locally in Ollama."
         ),
-        epilog="example: tail -f app.log | nimble-triage --format pretty --only-attention",
+        epilog="example: tail -f app.log | nimble-triage --format pretty --flagged-only",
     )
 
     parser.add_argument(
@@ -79,10 +86,28 @@ def build_parser() -> argparse.ArgumentParser:
         help="output format (default: jsonl)",
     )
     parser.add_argument(
+        "-m",
+        "--mode",
+        choices=("full", "attention"),
+        default="full",
+        help=(
+            "classification mode: full asks for severity, category, and attention; "
+            "attention asks only whether an entry needs attention"
+        ),
+    )
+    parser.add_argument(
         "-a",
-        "--only-attention",
+        "--flagged-only",
+        dest="flagged_only",
         action="store_true",
-        help="print only entries that need attention",
+        help="print only entries at or above the attention threshold",
+    )
+
+    parser.add_argument(
+        "--only-attention",
+        dest="flagged_only",
+        action="store_true",
+        help=argparse.SUPPRESS,
     )
     parser.add_argument(
         "-t",
@@ -131,6 +156,7 @@ def read_entries(files: list[str]) -> Iterator[str]:
             if text:
                 yield text[:MAX_LINE_CHARS]
 
+
 def escape_terminal_controls(text: str) -> str:
     """Render terminal control characters as visible escape sequences."""
     return "".join(
@@ -139,6 +165,7 @@ def escape_terminal_controls(text: str) -> str:
         else character.encode("unicode_escape").decode("ascii")
         for character in text
     )
+
 
 def format_pretty(result: TriageResult, color: bool) -> str:
     marker = "!" if result.needs_attention else " "
@@ -160,49 +187,53 @@ def format_pretty(result: TriageResult, color: bool) -> str:
         f"{result.attention_probability:.2f}  {line}"
     )
 
+
+def format_attention_pretty(result: AttentionResult, color: bool) -> str:
+    marker = "!" if result.needs_attention else " "
+
+    if color and result.needs_attention:
+        marker = f"{BOLD_RED}{marker}{RESET}"
+
+    line = escape_terminal_controls(result.line)
+    return f"{marker} {result.attention_probability:.2f}  {line}"
+
+
 def run(
     args: argparse.Namespace,
     client: Asker,
     out: TextIO,
     err: TextIO,
 ) -> int:
-    color = (
-        args.format == "pretty"
-        and out.isatty()
-        and not os.environ.get("NO_COLOR")
-    )
+    color = args.format == "pretty" and out.isatty() and not os.environ.get("NO_COLOR")
     total = flagged = failed = 0
 
     for line in read_entries(args.files):
         total += 1
 
         try:
-            result = triage_line(client, line, args.threshold)
+            if args.mode == "attention":
+                result = triage_attention_line(client, line, args.threshold)
+            else:
+                result = triage_line(client, line, args.threshold)
         except TriageError as exc:
             if not args.continue_on_error:
                 raise
 
             failed += 1
             message = escape_terminal_controls(str(exc))
-            err.write(
-                f"nimble-triage: entry {total}: {message}\n"
-            )
+            err.write(f"nimble-triage: entry {total}: {message}\n")
             err.flush()
             continue
 
         if result.needs_attention:
             flagged += 1
-        elif args.only_attention:
+        elif args.flagged_only:
             continue
 
         if args.format == "jsonl":
-            out.write(
-                json.dumps(
-                    result.to_dict(),
-                    ensure_ascii=False,
-                )
-                + "\n"
-            )
+            out.write(json.dumps(result.to_dict(), ensure_ascii=False) + "\n")
+        elif args.mode == "attention":
+            out.write(format_attention_pretty(result, color) + "\n")
         else:
             out.write(format_pretty(result, color) + "\n")
 
@@ -217,6 +248,7 @@ def run(
         err.write(summary + "\n")
 
     return 1 if failed else 0
+
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
@@ -239,9 +271,7 @@ def main(argv: list[str] | None = None) -> int:
         os.dup2(devnull, sys.stdout.fileno())
         return 1
     except OSError as exc:
-        message = escape_terminal_controls(
-            f"{exc.filename}: {exc.strerror}"
-        )
+        message = escape_terminal_controls(f"{exc.filename}: {exc.strerror}")
         print(f"nimble-triage: error: {message}", file=sys.stderr)
         return 1
     except KeyboardInterrupt:

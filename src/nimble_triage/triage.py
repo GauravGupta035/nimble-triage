@@ -7,7 +7,12 @@ from dataclasses import asdict, dataclass
 from typing import Any, Protocol
 
 from nimble_triage.client import TriageError
-from nimble_triage.questions import CATEGORIES, QUESTIONS, SEVERITIES
+from nimble_triage.questions import (
+    ATTENTION_QUESTIONS,
+    CATEGORIES,
+    QUESTIONS,
+    SEVERITIES,
+)
 
 DEFAULT_THRESHOLD = 0.5
 
@@ -39,6 +44,20 @@ class TriageResult:
             for k, v in asdict(self).items()
         }
 
+
+@dataclass(frozen=True)
+class AttentionResult:
+    attention_probability: float
+    needs_attention: bool
+    line: str
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            key: round(value, 4) if isinstance(value, float) else value
+            for key, value in asdict(self).items()
+        }
+
+
 def parse_probability(value: Any, field: str) -> float:
     """Parse and validate a probability returned by the model."""
     if isinstance(value, bool):
@@ -62,6 +81,7 @@ def parse_probability(value: Any, field: str) -> float:
         )
 
     return probability
+
 
 def parse_answers(
     line: str,
@@ -88,19 +108,13 @@ def parse_answers(
             "attention probability",
         )
     except (KeyError, TypeError) as exc:
-        raise TriageError(
-            f"unexpected answer shape from the model: {exc!r}"
-        ) from exc
+        raise TriageError(f"unexpected answer shape from the model: {exc!r}") from exc
 
     if severity_choice not in SEVERITIES:
-        raise TriageError(
-            f"model returned unknown severity {severity_choice!r}"
-        )
+        raise TriageError(f"model returned unknown severity {severity_choice!r}")
 
     if category_choice not in CATEGORIES:
-        raise TriageError(
-            f"model returned unknown category {category_choice!r}"
-        )
+        raise TriageError(f"model returned unknown category {category_choice!r}")
 
     return TriageResult(
         severity=severity_choice,
@@ -112,7 +126,40 @@ def parse_answers(
         line=line,
     )
 
+
+def parse_attention_answers(
+    line: str,
+    answers: dict[str, Any],
+    threshold: float = DEFAULT_THRESHOLD,
+) -> AttentionResult:
+    try:
+        probability = parse_probability(
+            answers["needs_attention"]["noul"],
+            "attention probability",
+        )
+    except (KeyError, TypeError) as exc:
+        raise TriageError(f"unexpected answer shape from the model: {exc!r}") from exc
+
+    return AttentionResult(
+        attention_probability=probability,
+        needs_attention=probability >= threshold,
+        line=line,
+    )
+
+
 def triage_line(
     client: Asker, line: str, threshold: float = DEFAULT_THRESHOLD
 ) -> TriageResult:
     return parse_answers(line, client.ask(line, QUESTIONS), threshold)
+
+
+def triage_attention_line(
+    client: Asker,
+    line: str,
+    threshold: float = DEFAULT_THRESHOLD,
+) -> AttentionResult:
+    return parse_attention_answers(
+        line,
+        client.ask(line, ATTENTION_QUESTIONS),
+        threshold,
+    )
