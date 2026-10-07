@@ -176,6 +176,9 @@ pip install -e ".[dev]"
 pytest    # runs without Ollama
 ```
 
+See [ROADMAP.md](ROADMAP.md) for the planned path from pattern-first reports to
+a stable 1.0 release.
+
 ## License
 
 MIT
