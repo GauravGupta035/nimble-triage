@@ -3,18 +3,27 @@
 import pytest
 
 from nimble_triage.client import TriageError
-from nimble_triage.questions import ATTENTION_QUESTIONS, QUESTIONS
+from nimble_triage.questions import (
+    ATTENTION_QUESTIONS,
+    DETAIL_QUESTIONS,
+    FULL_QUESTIONS,
+)
 from nimble_triage.triage import (
     AttentionResult,
+    ClassificationDetails,
     parse_answers,
     parse_attention_answers,
+    parse_detail_answers,
+    parse_full_answers,
     triage_attention_line,
+    triage_full_line,
     triage_line,
+    triage_scan_line,
 )
 
 
 def test_parses_a_well_formed_answer(make_answers):
-    result = parse_answers(
+    result = parse_full_answers(
         "disk full", make_answers(severity="critical", attention=0.97)
     )
     assert result.severity == "critical"
@@ -36,7 +45,7 @@ def test_parses_a_well_formed_answer(make_answers):
 def test_threshold_decides_needs_attention(
     make_answers, attention, threshold, expected
 ):
-    result = parse_answers("x", make_answers(attention=attention), threshold)
+    result = parse_full_answers("x", make_answers(attention=attention), threshold)
     assert result.needs_attention is expected
     assert (
         result.attention_probability == attention
@@ -45,14 +54,14 @@ def test_threshold_decides_needs_attention(
 
 def test_severity_rank_follows_order(make_answers):
     ranks = [
-        parse_answers("x", make_answers(severity=s)).severity_rank
+        parse_full_answers("x", make_answers(severity=s)).severity_rank
         for s in ("debug", "error")
     ]
     assert ranks == [0, 3]
 
 
 def test_to_dict_rounds_floats_but_keeps_bools(make_answers):
-    data = parse_answers("x", make_answers(attention=0.123456789)).to_dict()
+    data = parse_full_answers("x", make_answers(attention=0.123456789)).to_dict()
     assert data["attention_probability"] == 0.1235
     assert data["needs_attention"] is False
     assert list(data)[-1] == "line"
@@ -68,23 +77,23 @@ def test_to_dict_rounds_floats_but_keeps_bools(make_answers):
 )
 def test_malformed_answers_raise_triage_error(make_answers, broken):
     with pytest.raises(TriageError, match="unexpected answer shape"):
-        parse_answers("x", {**make_answers(), **broken} if broken else broken)
+        parse_full_answers("x", {**make_answers(), **broken} if broken else broken)
 
 
 def test_unknown_severity_rejected(make_answers):
     with pytest.raises(TriageError, match="unknown severity 'panic'"):
-        parse_answers("x", make_answers(severity="panic"))
+        parse_full_answers("x", make_answers(severity="panic"))
 
 
-def test_triage_line_sends_the_line_and_our_questions(fake_client):
+def test_triage_full_line_sends_the_line_and_full_questions(fake_client):
     client = fake_client()
-    triage_line(client, "ERROR boom")
-    assert client.calls == [("ERROR boom", QUESTIONS)]
+    triage_full_line(client, "ERROR boom")
+    assert client.calls == [("ERROR boom", FULL_QUESTIONS)]
 
 
 def test_unknown_category_rejected(make_answers):
     with pytest.raises(TriageError, match="unknown category 'made-up'"):
-        parse_answers(
+        parse_full_answers(
             "x",
             make_answers(category="made-up"),
         )
@@ -122,7 +131,7 @@ def test_invalid_model_probabilities_are_rejected(
     answers[section][field] = value
 
     with pytest.raises(TriageError, match=message):
-        parse_answers("x", answers)
+        parse_full_answers("x", answers)
 
 
 def test_parse_attention_answers() -> None:
@@ -192,3 +201,107 @@ def test_triage_attention_line_sends_only_attention_question(fake_client):
 
     assert result.needs_attention is True
     assert client.calls == [("ERROR boom", ATTENTION_QUESTIONS)]
+
+
+def test_parse_detail_answers() -> None:
+    details = parse_detail_answers(
+        {
+            "severity": {"choice": "critical", "confidence": 0.94},
+            "category": {"choice": "database", "confidence": 0.87},
+        }
+    )
+
+    assert details == ClassificationDetails(
+        severity="critical",
+        severity_confidence=0.94,
+        category="database",
+        category_confidence=0.87,
+    )
+
+
+@pytest.mark.parametrize(
+    "answers",
+    [
+        {},
+        {"severity": None, "category": {}},
+        {
+            "severity": {"choice": "error", "confidence": "invalid"},
+            "category": {"choice": "network", "confidence": 0.8},
+        },
+    ],
+)
+def test_malformed_detail_answers_raise_triage_error(answers) -> None:
+    with pytest.raises(TriageError, match="unexpected answer shape"):
+        parse_detail_answers(answers)
+
+
+def test_scan_skips_details_for_safe_entry(fake_client) -> None:
+    client = fake_client(
+        lambda _line: {"needs_attention": {"type": "noul", "noul": 0.2}}
+    )
+
+    result = triage_scan_line(client, "INFO request completed")
+
+    assert result is None
+    assert client.calls == [("INFO request completed", ATTENTION_QUESTIONS)]
+
+
+def test_scan_enriches_flagged_entry(fake_client, make_answers) -> None:
+    responses = iter(
+        [
+            {"needs_attention": {"type": "noul", "noul": 0.93}},
+            make_answers(
+                severity="critical",
+                category="database",
+                severity_confidence=0.91,
+                category_confidence=0.86,
+            ),
+        ]
+    )
+    client = fake_client(lambda _line: next(responses))
+
+    result = triage_scan_line(client, "ERROR database unavailable")
+
+    assert result == parse_full_answers(
+        "ERROR database unavailable",
+        make_answers(
+            severity="critical",
+            category="database",
+            attention=0.93,
+            severity_confidence=0.91,
+            category_confidence=0.86,
+        ),
+    )
+    assert client.calls == [
+        ("ERROR database unavailable", ATTENTION_QUESTIONS),
+        ("ERROR database unavailable", DETAIL_QUESTIONS),
+    ]
+
+
+def test_scan_threshold_can_avoid_detail_request(fake_client) -> None:
+    client = fake_client(
+        lambda _line: {"needs_attention": {"type": "noul", "noul": 0.69}}
+    )
+
+    result = triage_scan_line(client, "WARN nearly expired", threshold=0.7)
+
+    assert result is None
+    assert client.calls == [("WARN nearly expired", ATTENTION_QUESTIONS)]
+
+
+def test_scan_rejects_malformed_detail_response(fake_client) -> None:
+    responses = iter(
+        [
+            {"needs_attention": {"type": "noul", "noul": 0.9}},
+            {},
+        ]
+    )
+    client = fake_client(lambda _line: next(responses))
+
+    with pytest.raises(TriageError, match="unexpected answer shape"):
+        triage_scan_line(client, "ERROR boom")
+
+
+def test_legacy_full_mode_names_are_compatibility_aliases() -> None:
+    assert parse_answers is parse_full_answers
+    assert triage_line is triage_full_line

@@ -19,7 +19,8 @@ from nimble_triage.triage import (
     AttentionResult,
     TriageResult,
     triage_attention_line,
-    triage_line,
+    triage_full_line,
+    triage_scan_line,
 )
 
 MAX_LINE_CHARS = 8_000  # keeps every request well under the 64 KiB body limit
@@ -66,8 +67,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="nimble-triage",
         description=(
-            "Label every log line with a severity, a category and a needs-attention flag, "
-            "using the Nimble decision model running locally in Ollama."
+            "Classify log lines in full, attention, or scan mode using the Nimble "
+            "decision model running locally in Ollama."
         ),
         epilog="example: tail -f app.log | nimble-triage --format pretty --flagged-only",
     )
@@ -88,11 +89,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "-m",
         "--mode",
-        choices=("full", "attention"),
+        choices=("full", "attention", "scan"),
         default="full",
         help=(
-            "classification mode: full asks for severity, category, and attention; "
-            "attention asks only whether an entry needs attention"
+            "classification mode: full classifies every entry; attention asks only "
+            "whether an entry needs attention; scan fully classifies flagged entries"
         ),
     )
     parser.add_argument(
@@ -103,6 +104,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="print only entries at or above the attention threshold",
     )
 
+    # Preserve the 0.1 filtering option without continuing its ambiguous name.
     parser.add_argument(
         "--only-attention",
         dest="flagged_only",
@@ -213,8 +215,13 @@ def run(
         try:
             if args.mode == "attention":
                 result = triage_attention_line(client, line, args.threshold)
+            elif args.mode == "scan":
+                result = triage_scan_line(client, line, args.threshold)
+
+                if result is None:
+                    continue
             else:
-                result = triage_line(client, line, args.threshold)
+                result = triage_full_line(client, line, args.threshold)
         except TriageError as exc:
             if not args.continue_on_error:
                 raise
@@ -232,7 +239,7 @@ def run(
 
         if args.format == "jsonl":
             out.write(json.dumps(result.to_dict(), ensure_ascii=False) + "\n")
-        elif args.mode == "attention":
+        elif isinstance(result, AttentionResult):
             out.write(format_attention_pretty(result, color) + "\n")
         else:
             out.write(format_pretty(result, color) + "\n")

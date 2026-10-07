@@ -1,16 +1,17 @@
-"""Turn raw /v1/systemone answers into a typed TriageResult"""
+"""Validate System One answers and turn them into typed triage results."""
 
 from __future__ import annotations
 
 import math
-from dataclasses import asdict, dataclass
+from dataclasses import dataclass
 from typing import Any, Protocol
 
 from nimble_triage.client import TriageError
 from nimble_triage.questions import (
     ATTENTION_QUESTIONS,
     CATEGORIES,
-    QUESTIONS,
+    DETAIL_QUESTIONS,
+    FULL_QUESTIONS,
     SEVERITIES,
 )
 
@@ -40,8 +41,13 @@ class TriageResult:
 
     def to_dict(self) -> dict[str, Any]:
         return {
-            k: round(v, 4) if isinstance(v, float) else v
-            for k, v in asdict(self).items()
+            "severity": self.severity,
+            "severity_confidence": round(self.severity_confidence, 4),
+            "category": self.category,
+            "category_confidence": round(self.category_confidence, 4),
+            "attention_probability": round(self.attention_probability, 4),
+            "needs_attention": self.needs_attention,
+            "line": self.line,
         }
 
 
@@ -53,9 +59,18 @@ class AttentionResult:
 
     def to_dict(self) -> dict[str, Any]:
         return {
-            key: round(value, 4) if isinstance(value, float) else value
-            for key, value in asdict(self).items()
+            "attention_probability": round(self.attention_probability, 4),
+            "needs_attention": self.needs_attention,
+            "line": self.line,
         }
+
+
+@dataclass(frozen=True)
+class ClassificationDetails:
+    severity: str
+    severity_confidence: float
+    category: str
+    category_confidence: float
 
 
 def parse_probability(value: Any, field: str) -> float:
@@ -83,11 +98,9 @@ def parse_probability(value: Any, field: str) -> float:
     return probability
 
 
-def parse_answers(
-    line: str,
+def parse_detail_answers(
     answers: dict[str, Any],
-    threshold: float = DEFAULT_THRESHOLD,
-) -> TriageResult:
+) -> ClassificationDetails:
     try:
         severity = answers["severity"]
         category = answers["category"]
@@ -103,10 +116,6 @@ def parse_answers(
             category["confidence"],
             "category confidence",
         )
-        attention_probability = parse_probability(
-            answers["needs_attention"]["noul"],
-            "attention probability",
-        )
     except (KeyError, TypeError) as exc:
         raise TriageError(f"unexpected answer shape from the model: {exc!r}") from exc
 
@@ -116,11 +125,34 @@ def parse_answers(
     if category_choice not in CATEGORIES:
         raise TriageError(f"model returned unknown category {category_choice!r}")
 
-    return TriageResult(
+    return ClassificationDetails(
         severity=severity_choice,
         severity_confidence=severity_confidence,
         category=category_choice,
         category_confidence=category_confidence,
+    )
+
+
+def parse_full_answers(
+    line: str,
+    answers: dict[str, Any],
+    threshold: float = DEFAULT_THRESHOLD,
+) -> TriageResult:
+    details = parse_detail_answers(answers)
+
+    try:
+        attention_probability = parse_probability(
+            answers["needs_attention"]["noul"],
+            "attention probability",
+        )
+    except (KeyError, TypeError) as exc:
+        raise TriageError(f"unexpected answer shape from the model: {exc!r}") from exc
+
+    return TriageResult(
+        severity=details.severity,
+        severity_confidence=details.severity_confidence,
+        category=details.category,
+        category_confidence=details.category_confidence,
         attention_probability=attention_probability,
         needs_attention=attention_probability >= threshold,
         line=line,
@@ -147,10 +179,10 @@ def parse_attention_answers(
     )
 
 
-def triage_line(
+def triage_full_line(
     client: Asker, line: str, threshold: float = DEFAULT_THRESHOLD
 ) -> TriageResult:
-    return parse_answers(line, client.ask(line, QUESTIONS), threshold)
+    return parse_full_answers(line, client.ask(line, FULL_QUESTIONS), threshold)
 
 
 def triage_attention_line(
@@ -163,3 +195,30 @@ def triage_attention_line(
         client.ask(line, ATTENTION_QUESTIONS),
         threshold,
     )
+
+
+def triage_scan_line(
+    client: Asker,
+    line: str,
+    threshold: float = DEFAULT_THRESHOLD,
+) -> TriageResult | None:
+    attention = triage_attention_line(client, line, threshold)
+
+    if not attention.needs_attention:
+        return None
+
+    details = parse_detail_answers(client.ask(line, DETAIL_QUESTIONS))
+    return TriageResult(
+        severity=details.severity,
+        severity_confidence=details.severity_confidence,
+        category=details.category,
+        category_confidence=details.category_confidence,
+        attention_probability=attention.attention_probability,
+        needs_attention=True,
+        line=line,
+    )
+
+
+# Compatibility aliases for code written against nimble-triage 0.1 and 0.2.
+parse_answers = parse_full_answers
+triage_line = triage_full_line

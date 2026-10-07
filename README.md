@@ -1,10 +1,10 @@
 # nimble-triage
 
-Pipe your logs through a local decision model. Every entry, in the default (full) mode, gets a **severity**,
-a **category** and a **needs-attention** flag, computed by
-[Nimble](https://ollama.com/library/nimble) through Ollama's
-`/v1/systemone` endpoint. No API key is required. By default, logs are sent
-only to Ollama running on your own machine.
+Pipe your logs through a local decision model. In the default full mode, every
+entry gets a **severity**, a **category** and a **needs-attention** flag,
+computed by [Nimble](https://ollama.com/library/nimble) through Ollama's
+`/v1/systemone` endpoint. No API key is required. By default, logs are sent only
+to Ollama running on your own machine.
 
 ```console
 $ nimble-triage --format pretty app.log
@@ -60,6 +60,9 @@ nimble-triage --flagged-only application.log
 
 # Fast classification and print only flagged entries
 nimble-triage --mode attention --flagged-only application.log
+
+# Fast scan: find flagged entries, then add severity and category
+nimble-triage --mode scan application.log
 ```
 
 | Option | Default | Meaning |
@@ -71,7 +74,7 @@ nimble-triage --mode attention --flagged-only application.log
 | `--host` | `$OLLAMA_HOST` or `http://localhost:11434` | Where Ollama is running |
 | `--timeout` | `120` | Seconds to wait for each answer |
 | `--continue-on-error` | off | Report failed entries to stderr and continue; exit with code 1 if any fail |
-| `-m, --mode {full,attention}` | `full` | Select full classification or faster attention classification |
+| `-m, --mode {full,attention,scan}` | `full` | Select full, attention-only, or attention-first scan mode |
 | `-a, --flagged-only` | off | Print only entries at or above the attention threshold |
 
 ### JSON Lines output
@@ -98,6 +101,15 @@ all three questions. Use it when severity and category are not required.
 {"attention_probability": 0.9996, "needs_attention": true, "line": "WARN tls: certificate expires in 3 days"}
 ```
 
+### Scan mode
+
+`--mode scan` first asks only whether each entry needs attention. Entries below
+the threshold are discarded. Flagged entries receive a second request for
+severity and category, then use the same output schema as full mode. Scan mode
+is useful when only a small proportion of the input is expected to need action.
+Because scan mode asks the questions in separate requests, its scores and
+classifications can differ slightly from full mode.
+
 ### Exit codes
 
 | Code | Meaning |
@@ -114,7 +126,17 @@ command exits with code 1 if any entry failed.
 
 ## How it works
 
-In the default mode, each log line is sent to Ollama's `/v1/systemone` endpoint together with three typed questions: two `choice` questions (severity and category) and one `noul` (yes/no) question (needs attention). The `attention mode` sends only one question i.e., needs attention. Nimble is a decision model: rather than generating text, it scores the options and returns probabilities. The wording of the questions lives in [`questions.py`](src/nimble_triage/questions.py) and is the main lever on accuracy.
+In full mode, each log line is sent to Ollama's `/v1/systemone` endpoint with
+three typed questions: two `choice` questions for severity and category, and
+one `noul` (yes/no) question for attention.
+
+With `--mode attention`, each line is sent with only the attention question.
+With `--mode scan`, each line receives the attention question first, and only
+flagged entries receive the severity and category questions.
+Nimble is a decision model: rather than generating text, it scores the options
+and returns probabilities. The wording of the questions lives in
+[`questions.py`](src/nimble_triage/questions.py) and is the main lever on
+accuracy.
 
 ## Privacy
 
@@ -131,7 +153,8 @@ before sending them to a remote host.
   entries, not entire log archives. Filter large inputs before processing.
   Use `--mode attention` when severity and category are not required. It sends
   one model question per entry instead of three and can substantially reduce
-  processing time.
+  processing time. Use `--mode scan` to add severity and category only to
+  entries that meet the attention threshold.
 - **Independent entries:** each non-blank line is classified independently.
   Multiline stack traces and surrounding log context are not grouped together.
 - **Long lines:** entries are cut to their first 8,000 characters before being

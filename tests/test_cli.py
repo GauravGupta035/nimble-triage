@@ -15,10 +15,10 @@ from nimble_triage.cli import (
     run,
 )
 from nimble_triage.client import TriageError
-from nimble_triage.questions import ATTENTION_QUESTIONS
+from nimble_triage.questions import ATTENTION_QUESTIONS, DETAIL_QUESTIONS
 from nimble_triage.triage import (
     AttentionResult,
-    parse_answers,
+    parse_full_answers,
 )
 
 
@@ -114,7 +114,9 @@ def test_pretty_has_no_color_when_not_a_terminal(log_file, keyword_client):
 
 
 def test_pretty_color_mode(make_answers):
-    result = parse_answers("ERROR x", make_answers(severity="error", attention=0.9))
+    result = parse_full_answers(
+        "ERROR x", make_answers(severity="error", attention=0.9)
+    )
     line = format_pretty(result, color=True)
     assert "\033[31merror" in line
     assert line.endswith("ERROR x")
@@ -146,7 +148,7 @@ def test_threshold_must_be_a_probability(value, capsys):
 
 
 def test_terminal_controls_are_escaped(make_answers):
-    result = parse_answers(
+    result = parse_full_answers(
         "safe\x1b]52;c;Zm9v\x07",
         make_answers(severity="info", attention=0.1),
     )
@@ -159,7 +161,7 @@ def test_terminal_controls_are_escaped(make_answers):
 
 
 def test_terminal_controls_are_escaped_when_color_is_enabled(make_answers):
-    result = parse_answers(
+    result = parse_full_answers(
         "safe\x1b]52;c;Zm9v\x07",
         make_answers(severity="error", attention=0.9),
     )
@@ -405,7 +407,93 @@ def test_legacy_only_attention_alias_still_filters_output(
 def test_help_uses_unambiguous_option_names():
     help_text = build_parser().format_help()
 
-    assert "-m {full,attention}" in help_text
+    assert "-m {full,attention,scan}" in help_text
     assert "-a, --flagged-only" in help_text
     assert "--only-attention" not in help_text
     assert "--attention-only" not in help_text
+
+
+def test_scan_mode_outputs_only_flagged_entries_with_full_fields(
+    log_file,
+    keyword_client,
+):
+    code, out, err = run_cli(
+        ["--mode", "scan", str(log_file)],
+        keyword_client,
+    )
+
+    rows = [json.loads(line) for line in out.splitlines()]
+
+    assert code == 0
+    assert [row["line"] for row in rows] == [
+        "ERROR db down",
+        "WARN cert expires soon",
+    ]
+    assert all(
+        set(row)
+        == {
+            "severity",
+            "severity_confidence",
+            "category",
+            "category_confidence",
+            "attention_probability",
+            "needs_attention",
+            "line",
+        }
+        for row in rows
+    )
+    assert err == ""
+    assert [questions for _line, questions in keyword_client.calls] == [
+        ATTENTION_QUESTIONS,
+        DETAIL_QUESTIONS,
+        ATTENTION_QUESTIONS,
+        ATTENTION_QUESTIONS,
+        DETAIL_QUESTIONS,
+    ]
+
+
+def test_scan_mode_pretty_output_and_summary(log_file, keyword_client):
+    code, out, err = run_cli(
+        ["--mode", "scan", "--format", "pretty", str(log_file)],
+        keyword_client,
+    )
+
+    assert code == 0
+    assert out.splitlines() == [
+        "! error     network     0.95  ERROR db down",
+        "! warning?  network     0.80  WARN cert expires soon",
+    ]
+    assert err == "3 entries, 2 need attention\n"
+
+
+def test_scan_mode_accepts_redundant_flagged_only(log_file, keyword_client):
+    code, out, err = run_cli(
+        ["--mode", "scan", "--flagged-only", str(log_file)],
+        keyword_client,
+    )
+
+    assert code == 0
+    assert len(out.splitlines()) == 2
+    assert err == ""
+
+
+def test_scan_mode_continue_on_detail_error(log_file, make_answers):
+    class DetailFailingClient:
+        def ask(self, state, questions):
+            if questions is ATTENTION_QUESTIONS:
+                attention = 0.05 if state.startswith("INFO") else 0.9
+                return {"needs_attention": {"type": "noul", "noul": attention}}
+
+            if state.startswith("WARN"):
+                raise TriageError("detail classification failed")
+
+            return make_answers(severity="error", attention=0.9)
+
+    code, out, err = run_cli(
+        ["--mode", "scan", "--continue-on-error", str(log_file)],
+        DetailFailingClient(),
+    )
+
+    assert code == 1
+    assert [json.loads(line)["line"] for line in out.splitlines()] == ["ERROR db down"]
+    assert "entry 3: detail classification failed" in err

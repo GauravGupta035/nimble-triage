@@ -35,14 +35,10 @@ def resolve_host(host: str | None = None) -> str:
         raise TriageError(f"invalid Ollama URL {raw!r}: {exc}") from exc
 
     if parsed.scheme not in {"http", "https"}:
-        raise TriageError(
-            f"invalid Ollama URL {raw!r}: scheme must be http or https"
-        )
+        raise TriageError(f"invalid Ollama URL {raw!r}: scheme must be http or https")
 
     if not parsed.hostname:
-        raise TriageError(
-            f"invalid Ollama URL {raw!r}: hostname is missing"
-        )
+        raise TriageError(f"invalid Ollama URL {raw!r}: hostname is missing")
 
     if parsed.query or parsed.fragment:
         raise TriageError(
@@ -50,13 +46,12 @@ def resolve_host(host: str | None = None) -> str:
         )
 
     if port is None:
-        parsed = parsed._replace(
-            netloc=f"{parsed.netloc}:{DEFAULT_PORT}"
-        )
+        parsed = parsed._replace(netloc=f"{parsed.netloc}:{DEFAULT_PORT}")
 
     parsed = parsed._replace(path=parsed.path.rstrip("/"))
 
     return urllib.parse.urlunsplit(parsed)
+
 
 class SystemOneClient:
     """Sends one state plus a set of named questions, returns the answers dict."""
@@ -135,6 +130,18 @@ class SystemOneClient:
 
     def _explain_http_error(self, exc: urllib.error.HTTPError) -> str:
         raw = exc.read().decode("utf-8", errors="replace").strip()
+        normalized = raw.casefold()
+
+        if exc.code >= 500 and (
+            "insufficient memory" in normalized
+            or "out of memory" in normalized
+            or "outofmemory" in normalized
+        ):
+            return (
+                f"Ollama ran out of memory while running model '{self.model}'. "
+                "Stop other loaded models or use a smaller model or quantization. "
+                "If `ollama ps` is empty, this model does not fit available memory."
+            )
 
         try:
             detail = json.loads(raw).get("error", raw)
