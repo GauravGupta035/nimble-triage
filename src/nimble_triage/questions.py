@@ -1,4 +1,4 @@
-"""The three questions nimble-triage asks Nimble about every log entry.
+"""Question sets used by nimble-triage's full and attention modes.
 
 This wording is the model's only guidance, so treat it like code: when you change
 it, re-run tests/fixtures/sample.log and compare. Descriptions must be plain
@@ -56,20 +56,32 @@ ATTENTION_QUESTION: dict[str, Any] = {
     },
 }
 
-QUESTIONS: dict[str, dict[str, Any]] = {
-    "severity": {
-        "type": "choice",
-        "instructions": "How severe is this log entry?",
-        "criteria": SEVERITY_CRITERIA,
-    },
-    "category": {
-        "type": "choice",
-        "instructions": "Which area of the system is this log entry about?",
-        "criteria": CATEGORY_CRITERIA,
-    },
+SEVERITY_QUESTION: dict[str, Any] = {
+    "type": "choice",
+    "instructions": "How severe is this log entry?",
+    "criteria": SEVERITY_CRITERIA,
+}
+
+CATEGORY_QUESTION: dict[str, Any] = {
+    "type": "choice",
+    "instructions": "Which area of the system is this log entry about?",
+    "criteria": CATEGORY_CRITERIA,
+}
+
+FULL_QUESTIONS: dict[str, dict[str, Any]] = {
+    "severity": SEVERITY_QUESTION,
+    "category": CATEGORY_QUESTION,
     "needs_attention": ATTENTION_QUESTION,
 }
 
 ATTENTION_QUESTIONS: dict[str, dict[str, Any]] = {
     "needs_attention": ATTENTION_QUESTION,
 }
+
+DETAIL_QUESTIONS: dict[str, dict[str, Any]] = {
+    "severity": SEVERITY_QUESTION,
+    "category": CATEGORY_QUESTION,
+}
+
+# Compatibility alias for code written against nimble-triage 0.1 and 0.2.
+QUESTIONS = FULL_QUESTIONS

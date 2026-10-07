@@ -75,6 +75,31 @@ def test_http_errors_become_actionable_messages(code, body, expected):
     assert expected in message
 
 
+@pytest.mark.parametrize(
+    "memory_error",
+    [
+        "Insufficient Memory",
+        "kIOGPUCommandBufferCallbackErrorOutOfMemory",
+    ],
+)
+def test_out_of_memory_error_is_concise_and_actionable(memory_error):
+    body = (
+        '{"error":{"code":500,"message":"Compute error.",'
+        '"type":"server_error"}}\n'
+        f"error: {memory_error}\n"
+        f"error: {memory_error}\n"
+    )
+
+    message = SystemOneClient(model="clef-flash")._explain_http_error(
+        _http_error(500, body)
+    )
+
+    assert "model 'clef-flash'" in message
+    assert "ran out of memory" in message
+    assert "does not fit available memory" in message
+    assert memory_error not in message
+
+
 def test_unreachable_host_raises_triage_error():
     with pytest.raises(TriageError, match="cannot reach Ollama"):
         SystemOneClient(host="localhost:1", timeout=2).ask("x", {})
