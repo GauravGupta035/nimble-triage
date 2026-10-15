@@ -9,6 +9,14 @@ import pytest
 from nimble_triage.client import SystemOneClient, TriageError, resolve_host
 
 
+class JsonResponse(io.BytesIO):
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_args):
+        self.close()
+
+
 @pytest.mark.parametrize(
     ("given", "expected"),
     [
@@ -103,6 +111,21 @@ def test_out_of_memory_error_is_concise_and_actionable(memory_error):
 def test_unreachable_host_raises_triage_error():
     with pytest.raises(TriageError, match="cannot reach Ollama"):
         SystemOneClient(host="localhost:1", timeout=2).ask("x", {})
+
+
+def test_model_identity_uses_digest_from_local_model_list(monkeypatch):
+    def fake_urlopen(request, timeout):
+        assert request.full_url == "http://localhost:11434/api/tags"
+        assert timeout == 5.0
+        return JsonResponse(
+            b'{"models":[{"name":"nimble:latest","digest":"sha256:abc"}]}'
+        )
+
+    monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+
+    assert SystemOneClient().resolve_model_identity().endswith(
+        "|nimble:latest@sha256:abc"
+    )
 
 
 def test_http_error_from_ask_is_explained(monkeypatch):

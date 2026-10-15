@@ -52,6 +52,34 @@ class TriageResult:
 
 
 @dataclass(frozen=True)
+class Classification:
+    """A full model decision independent of any particular input entry."""
+
+    severity: str
+    severity_confidence: float
+    category: str
+    category_confidence: float
+    attention_probability: float
+
+    @property
+    def severity_rank(self) -> int:
+        return SEVERITIES.index(self.severity)
+
+    def needs_attention(self, threshold: float = DEFAULT_THRESHOLD) -> bool:
+        return self.attention_probability >= threshold
+
+    def to_dict(self, threshold: float = DEFAULT_THRESHOLD) -> dict[str, Any]:
+        return {
+            "severity": self.severity,
+            "severity_confidence": round(self.severity_confidence, 4),
+            "category": self.category,
+            "category_confidence": round(self.category_confidence, 4),
+            "attention_probability": round(self.attention_probability, 4),
+            "needs_attention": self.needs_attention(threshold),
+        }
+
+
+@dataclass(frozen=True)
 class AttentionResult:
     attention_probability: float
     needs_attention: bool
@@ -138,6 +166,22 @@ def parse_full_answers(
     answers: dict[str, Any],
     threshold: float = DEFAULT_THRESHOLD,
 ) -> TriageResult:
+    classification = parse_classification(answers)
+
+    return TriageResult(
+        severity=classification.severity,
+        severity_confidence=classification.severity_confidence,
+        category=classification.category,
+        category_confidence=classification.category_confidence,
+        attention_probability=classification.attention_probability,
+        needs_attention=classification.needs_attention(threshold),
+        line=line,
+    )
+
+
+def parse_classification(answers: dict[str, Any]) -> Classification:
+    """Parse a full model answer without attaching it to an input line."""
+
     details = parse_detail_answers(answers)
 
     try:
@@ -148,14 +192,12 @@ def parse_full_answers(
     except (KeyError, TypeError) as exc:
         raise TriageError(f"unexpected answer shape from the model: {exc!r}") from exc
 
-    return TriageResult(
+    return Classification(
         severity=details.severity,
         severity_confidence=details.severity_confidence,
         category=details.category,
         category_confidence=details.category_confidence,
         attention_probability=attention_probability,
-        needs_attention=attention_probability >= threshold,
-        line=line,
     )
 
 
@@ -183,6 +225,12 @@ def triage_full_line(
     client: Asker, line: str, threshold: float = DEFAULT_THRESHOLD
 ) -> TriageResult:
     return parse_full_answers(line, client.ask(line, FULL_QUESTIONS), threshold)
+
+
+def classify_pattern(client: Asker, pattern: str) -> Classification:
+    """Classify one normalized pattern with the full question set."""
+
+    return parse_classification(client.ask(pattern, FULL_QUESTIONS))
 
 
 def triage_attention_line(

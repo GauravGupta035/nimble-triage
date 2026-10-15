@@ -73,6 +73,49 @@ class SystemOneClient:
         self.timeout = timeout
         self.keep_alive = keep_alive
 
+    @property
+    def model_identity(self) -> str:
+        """Identify the endpoint and model used for cache isolation."""
+
+        return f"{self.base_url}|{self.model}"
+
+    def resolve_model_identity(self) -> str:
+        """Include Ollama's model digest when the local model list provides it."""
+
+        request = urllib.request.Request(self.base_url + "/api/tags", method="GET")
+        try:
+            with urllib.request.urlopen(
+                request, timeout=min(self.timeout, 5.0)
+            ) as response:
+                data = json.load(response)
+        except (
+            OSError,
+            urllib.error.HTTPError,
+            urllib.error.URLError,
+            json.JSONDecodeError,
+            UnicodeDecodeError,
+        ):
+            return self.model_identity
+
+        models = data.get("models") if isinstance(data, dict) else None
+        if not isinstance(models, list):
+            return self.model_identity
+
+        expected = self.model if ":" in self.model else f"{self.model}:latest"
+        for item in models:
+            if not isinstance(item, dict):
+                continue
+            name = item.get("name") or item.get("model")
+            digest = item.get("digest")
+            normalized_name = (
+                name
+                if isinstance(name, str) and ":" in name
+                else f"{name}:latest"
+            )
+            if normalized_name == expected and isinstance(digest, str) and digest:
+                return f"{self.base_url}|{expected}@{digest}"
+        return self.model_identity
+
     def ask(self, state: str, questions: dict[str, Any]) -> dict[str, Any]:
         payload = {
             "model": self.model,
