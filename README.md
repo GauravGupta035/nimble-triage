@@ -63,6 +63,13 @@ nimble-triage --mode attention --flagged-only application.log
 
 # Fast scan: find flagged entries, then add severity and category
 nimble-triage --mode scan application.log
+
+# Group repeated entries and classify each uncached pattern once
+nimble-triage report application.log
+nimble-triage report --format json application.log
+
+# Inspect grouping without starting Ollama
+nimble-triage patterns application.log
 ```
 
 | Option | Default | Meaning |
@@ -76,6 +83,60 @@ nimble-triage --mode scan application.log
 | `--continue-on-error` | off | Report failed entries to stderr and continue; exit with code 1 if any fail |
 | `-m, --mode {full,attention,scan}` | `full` | Select full, attention-only, or attention-first scan mode |
 | `-a, --flagged-only` | off | Print only entries at or above the attention threshold |
+
+### Fast pattern reports
+
+`nimble-triage report` normalizes high-cardinality values, groups matching
+entries, and sends each distinct uncached pattern to Nimble once. It preserves
+occurrence counts, timestamps when a supported leading timestamp is present,
+and representative source locations.
+
+Before model work starts, report progress is written to stderr with the number
+of entries, distinct patterns, and uncached evaluations. Progress continues as
+each pattern is evaluated. By default, a report stops before making more than
+50 uncached model requests. Use `--max-model-requests N` to select another cap,
+or `--max-model-requests 0` to disable the safeguard.
+
+```console
+$ nimble-triage report application.log
+Scanned 84,231 entries
+Found 317 distinct patterns
+289 patterns served from cache
+28 patterns evaluated
+5 patterns need attention, representing 12,990 occurrences
+Completed in 57.31s
+
+CRITICAL  database     12,481 occurrences
+Database connection refused for host <IP>
+First: 2026-10-09 10:14:02  Last: 2026-10-09 10:48:31
+Sources: application.log:18 to application.log:83911
+```
+
+Pretty reports show patterns needing attention and failed classifications by
+default. Pass `--all` to include patterns below the attention threshold. The
+JSON report always contains every pattern and includes `schema_version` for
+downstream consumers.
+
+Classifications are cached in SQLite. The default path is
+`~/Library/Caches/nimble-triage/classifications.sqlite3` on macOS,
+`$XDG_CACHE_HOME/nimble-triage/classifications.sqlite3` when
+`XDG_CACHE_HOME` is set, and `~/.cache/nimble-triage/classifications.sqlite3`
+on other Unix-like systems. Use `--cache PATH` to select another database or
+`--no-cache` for an uncached run. Cache keys include the normalized pattern,
+Ollama endpoint, model name and digest when available, question definitions,
+normalizer version, and classification schema version. Changing the attention
+threshold does not require reclassification.
+
+`nimble-triage patterns` runs only normalization and aggregation. It never
+connects to Ollama, which makes it useful for inspecting grouping rules before
+running a report.
+
+The first normalizer deliberately keeps ordinary numbers distinct. It replaces
+UUIDs, explicit request and trace identifiers, contextual process identifiers,
+long hexadecimal hashes, common ISO, syslog, and Apache timestamps, IP
+addresses, email addresses, and common credential values. This avoids merging
+events whose numeric values change their meaning, such as a certificate
+expiring in 3 days versus 300 days.
 
 ### JSON Lines output
 
@@ -115,14 +176,14 @@ classifications can differ slightly from full mode.
 | Code | Meaning |
 |---|---|
 | 0 | Success |
-| 1 | Runtime error, or at least one failed entry with `--continue-on-error` |
+| 1 | Runtime error, or at least one failed entry or pattern with `--continue-on-error` |
 | 2 | Invalid command-line arguments |
 | 130 | Interrupted with Ctrl-C |
 
 By default, nimble-triage stops on the first model or response error. Use
 `--continue-on-error` for long streams where partial results are preferable.
 Errors are written to stderr, successful results remain on stdout, and the
-command exits with code 1 if any entry failed.
+command exits with code 1 if any entry or report pattern failed.
 
 ## How it works
 
@@ -133,6 +194,9 @@ one `noul` (yes/no) question for attention.
 With `--mode attention`, each line is sent with only the attention question.
 With `--mode scan`, each line receives the attention question first, and only
 flagged entries receive the severity and category questions.
+With `report`, input is normalized and aggregated locally before one full
+request is made for each uncached pattern. Successful classifications are
+cached immediately so an interrupted run can reuse completed work.
 Nimble is a decision model: rather than generating text, it scores the options
 and returns probabilities. The wording of the questions lives in
 [`questions.py`](src/nimble_triage/questions.py) and is the main lever on
@@ -146,19 +210,25 @@ the local machine. If you configure another hostname, your logs are transmitted
 to that server. Use HTTPS and review logs for credentials or personal data
 before sending them to a remote host.
 
+Pattern reports keep representative original entries only in memory and in the
+requested output. The persistent cache stores normalized patterns and model
+results, not representative raw entries. Normalization redacts common
+credential fields and email addresses, but it cannot guarantee removal of all
+sensitive application-specific values.
+
 ## Limits
 
-- **Speed:** each line is one model call, roughly 1 to 3 seconds per line on an
-  Apple M4 with 16 GB. nimble-triage is intended for tens to hundreds of
-  entries, not entire log archives. Filter large inputs before processing.
-  Use `--mode attention` when severity and category are not required. It sends
-  one model question per entry instead of three and can substantially reduce
-  processing time. Use `--mode scan` to add severity and category only to
-  entries that meet the attention threshold.
+- **Speed:** the original full, attention, and scan modes still make at least
+  one model request per entry. Use `report` for large files so model work is
+  proportional to distinct uncached patterns. Local preprocessing still reads
+  every entry and keeps one aggregate plus bounded examples per distinct
+  pattern in memory.
 - **Independent entries:** each non-blank line is classified independently.
-  Multiline stack traces and surrounding log context are not grouped together.
+  Pattern reports group normalized single-line entries, but multiline stack
+  traces and surrounding log context are not yet combined into events.
 - **Long lines:** entries are cut to their first 8,000 characters before being
-  sent to Ollama.
+  sent to Ollama. Pattern-report JSON marks truncated examples and includes
+  their original character lengths.
 - **Uncalibrated scores:** confidence and attention scores are model outputs,
   not guarantees of correctness. Tune `--threshold` against representative
   logs before relying on it.
@@ -174,6 +244,16 @@ cd nimble-triage
 python3 -m venv .venv && source .venv/bin/activate
 pip install -e ".[dev]"
 pytest    # runs without Ollama
+```
+
+Run development commands while the virtual environment is active. If you also
+have a pipx installation, `command -v nimble-triage` may resolve to that older
+copy instead of `.venv/bin/nimble-triage`. To make the global command use the
+current checkout, install it as an editable pipx package:
+
+```bash
+pipx install --force --editable .
+nimble-triage --version
 ```
 
 See [ROADMAP.md](ROADMAP.md) for the planned path from pattern-first reports to

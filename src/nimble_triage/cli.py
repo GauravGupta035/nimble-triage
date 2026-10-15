@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import argparse
-import fileinput
 import json
 import math
 import os
@@ -12,7 +11,18 @@ from collections.abc import Iterator
 from typing import TextIO
 
 from nimble_triage import __version__
+from nimble_triage.cache import ClassificationCache, default_cache_path
 from nimble_triage.client import DEFAULT_MODEL, SystemOneClient, TriageError
+from nimble_triage.entries import read_log_entries
+from nimble_triage.patterns import DEFAULT_MAX_EXAMPLES, aggregate_entries
+from nimble_triage.report_format import (
+    format_patterns_json,
+    format_patterns_pretty,
+    format_report_json,
+    format_report_pretty,
+)
+from nimble_triage.reporting import build_pattern_report
+from nimble_triage.text import escape_terminal_controls
 from nimble_triage.triage import (
     DEFAULT_THRESHOLD,
     Asker,
@@ -24,6 +34,7 @@ from nimble_triage.triage import (
 )
 
 MAX_LINE_CHARS = 8_000  # keeps every request well under the 64 KiB body limit
+DEFAULT_MAX_MODEL_REQUESTS = 50
 LOW_CONFIDENCE = 0.6  # below this, pretty output marks the severity with "?"
 
 RESET = "\033[0m"
@@ -63,6 +74,18 @@ def positive_seconds(text: str) -> float:
     return value
 
 
+def nonnegative_integer(text: str) -> int:
+    """argparse type for zero or a positive integer."""
+
+    try:
+        value = int(text)
+    except ValueError:
+        raise argparse.ArgumentTypeError(f"{text!r} is not an integer") from None
+    if value < 0:
+        raise argparse.ArgumentTypeError(f"{text!r} must not be negative")
+    return value
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="nimble-triage",
@@ -70,7 +93,10 @@ def build_parser() -> argparse.ArgumentParser:
             "Classify log lines in full, attention, or scan mode using the Nimble "
             "decision model running locally in Ollama."
         ),
-        epilog="example: tail -f app.log | nimble-triage --format pretty --flagged-only",
+        epilog=(
+            "example: tail -f app.log | nimble-triage --format pretty --flagged-only; "
+            "use 'nimble-triage report --help' for aggregate reports"
+        ),
     )
 
     parser.add_argument(
@@ -147,26 +173,121 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _add_report_connection_options(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "-t",
+        "--threshold",
+        type=probability,
+        default=DEFAULT_THRESHOLD,
+        help=f"needs-attention cutoff between 0 and 1 (default: {DEFAULT_THRESHOLD})",
+    )
+    parser.add_argument(
+        "--model",
+        default=DEFAULT_MODEL,
+        help=f"Ollama model (default: {DEFAULT_MODEL})",
+    )
+    parser.add_argument(
+        "--host", help="Ollama URL (default: $OLLAMA_HOST or http://localhost:11434)"
+    )
+    parser.add_argument(
+        "--timeout",
+        type=positive_seconds,
+        default=120.0,
+        help="seconds to wait for each answer (default: 120)",
+    )
+
+
+def build_report_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        prog="nimble-triage report",
+        description="Group repeated log patterns and classify each uncached pattern once.",
+    )
+    parser.add_argument(
+        "files",
+        nargs="*",
+        metavar="FILE",
+        help="log files to read (default: stdin, '-' also means stdin)",
+    )
+    parser.add_argument(
+        "-f",
+        "--format",
+        choices=("pretty", "json"),
+        default="pretty",
+        help="output format (default: pretty)",
+    )
+    parser.add_argument(
+        "--all",
+        dest="include_all",
+        action="store_true",
+        help="include patterns below the attention threshold in pretty output",
+    )
+    parser.add_argument(
+        "--cache",
+        default=str(default_cache_path()),
+        metavar="PATH",
+        help="classification cache path",
+    )
+    parser.add_argument(
+        "--no-cache",
+        action="store_true",
+        help="do not read or write the classification cache",
+    )
+    parser.add_argument(
+        "--max-examples",
+        type=nonnegative_integer,
+        default=DEFAULT_MAX_EXAMPLES,
+        help=f"representative entries kept per pattern (default: {DEFAULT_MAX_EXAMPLES})",
+    )
+    parser.add_argument(
+        "--max-model-requests",
+        type=nonnegative_integer,
+        default=DEFAULT_MAX_MODEL_REQUESTS,
+        metavar="N",
+        help=(
+            "maximum uncached patterns to evaluate (default: "
+            f"{DEFAULT_MAX_MODEL_REQUESTS}; 0 disables the limit)"
+        ),
+    )
+    parser.add_argument(
+        "--continue-on-error",
+        action="store_true",
+        help="include failed patterns and continue (exit code 1 if any fail)",
+    )
+    _add_report_connection_options(parser)
+    return parser
+
+
+def build_patterns_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        prog="nimble-triage patterns",
+        description="Inspect normalized patterns without connecting to Ollama.",
+    )
+    parser.add_argument(
+        "files",
+        nargs="*",
+        metavar="FILE",
+        help="log files to read (default: stdin, '-' also means stdin)",
+    )
+    parser.add_argument(
+        "-f",
+        "--format",
+        choices=("pretty", "json"),
+        default="pretty",
+        help="output format (default: pretty)",
+    )
+    parser.add_argument(
+        "--max-examples",
+        type=nonnegative_integer,
+        default=DEFAULT_MAX_EXAMPLES,
+        help=f"representative entries kept per pattern (default: {DEFAULT_MAX_EXAMPLES})",
+    )
+    return parser
+
+
 def read_entries(files: list[str]) -> Iterator[str]:
     """Yield non-blank, stripped lines from the files, or stdin when none are given."""
-    with fileinput.input(
-        files=files or ("-",), encoding="utf-8", errors="replace"
-    ) as lines:
-        for raw in lines:
-            text = raw.strip()
-
-            if text:
-                yield text[:MAX_LINE_CHARS]
-
-
-def escape_terminal_controls(text: str) -> str:
-    """Render terminal control characters as visible escape sequences."""
-    return "".join(
-        character
-        if character.isprintable()
-        else character.encode("unicode_escape").decode("ascii")
-        for character in text
-    )
+    for entry in read_log_entries(files, MAX_LINE_CHARS):
+        yield entry.text
 
 
 def format_pretty(result: TriageResult, color: bool) -> str:
@@ -257,16 +378,76 @@ def run(
     return 1 if failed else 0
 
 
-def main(argv: list[str] | None = None) -> int:
-    args = build_parser().parse_args(argv)
+def run_patterns_command(
+    args: argparse.Namespace,
+    out: TextIO,
+) -> int:
+    entries = read_log_entries(args.files, MAX_LINE_CHARS)
+    aggregates = aggregate_entries(entries, max_examples=args.max_examples)
+    scanned_entries = sum(item.occurrences for item in aggregates.values())
+    if args.format == "json":
+        out.write(format_patterns_json(scanned_entries, aggregates))
+    else:
+        out.write(format_patterns_pretty(scanned_entries, aggregates))
+    return 0
 
-    try:
+
+def run_report_command(
+    args: argparse.Namespace,
+    client: Asker,
+    out: TextIO,
+    cache: ClassificationCache | None,
+    err: TextIO | None = None,
+) -> int:
+    entries = read_log_entries(args.files, MAX_LINE_CHARS)
+    report = build_pattern_report(
+        entries,
+        client,
+        cache=cache,
+        threshold=args.threshold,
+        continue_on_error=args.continue_on_error,
+        max_examples=args.max_examples,
+        max_model_requests=args.max_model_requests or None,
+        progress=(lambda message: print(message, file=err, flush=True)) if err else None,
+    )
+    if args.format == "json":
+        out.write(format_report_json(report))
+    else:
+        out.write(format_report_pretty(report, include_all=args.include_all))
+    return 1 if report.failed_patterns else 0
+
+
+def _dispatch(argv: list[str]) -> int:
+    if argv and argv[0] == "patterns":
+        args = build_patterns_parser().parse_args(argv[1:])
+        return run_patterns_command(args, sys.stdout)
+
+    if argv and argv[0] == "report":
+        args = build_report_parser().parse_args(argv[1:])
         client = SystemOneClient(
             host=args.host,
             model=args.model,
             timeout=args.timeout,
         )
-        return run(args, client, sys.stdout, sys.stderr)
+        if args.no_cache:
+            return run_report_command(args, client, sys.stdout, None, sys.stderr)
+        with ClassificationCache(args.cache) as cache:
+            return run_report_command(args, client, sys.stdout, cache, sys.stderr)
+
+    args = build_parser().parse_args(argv)
+    client = SystemOneClient(
+        host=args.host,
+        model=args.model,
+        timeout=args.timeout,
+    )
+    return run(args, client, sys.stdout, sys.stderr)
+
+
+def main(argv: list[str] | None = None) -> int:
+    arguments = list(sys.argv[1:] if argv is None else argv)
+
+    try:
+        return _dispatch(arguments)
     except TriageError as exc:
         message = escape_terminal_controls(str(exc))
         print(f"nimble-triage: error: {message}", file=sys.stderr)
